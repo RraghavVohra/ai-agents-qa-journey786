@@ -1,0 +1,27 @@
+import { test, expect } from '../fixtures';
+
+test('User Login with Valid Credentials', async ({ page }) => {
+  // Step 1: Navigate to the real practice login page
+  await page.goto('https://rahulshettyacademy.com/loginpagePractise/');
+
+  // Step 2: Fill in username
+  await page.locator('#username').fill('rahulshettyacademy');
+
+  // Step 3: Fill in password
+  await page.locator('#password').fill('Learning@830$3mK2');
+
+  // Step 4: Check the "I Agree" checkbox
+  // NOTE: this step didn't exist in the AI's Day 1 output — real page, real gap
+  await page.locator('#terms').check();
+
+  // Step 5: Admin radio button is selected by default on this page,
+  // so no action needed here — confirmed by inspection, not assumed.
+
+  // Step 6: Click the Sign In button
+  await page.locator('#signInBtn').click();
+
+  // Step 7: Assert the expected result
+  // Confirmed by actually watching the run: successful login redirects
+  // to /angularpractice/shop. This replaces a guess with an observed fact.
+  await expect(page).toHaveURL('https://rahulshettyacademy.com/angularpractice/shop');
+});

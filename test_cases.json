@@ -1,0 +1,39 @@
+[
+  {
+    "title": "User Login with Valid Credentials",
+    "steps": [
+      "Navigate to the login page of the application.",
+      "Enter a valid username into the username input field.",
+      "Enter the corresponding valid password into the password input field.",
+      "Click the 'Login' button."
+    ],
+    "expected_result": "The user is successfully logged in and redirected to their dashboard."
+  },
+  {
+    "title": "Search for a product by name",
+    "steps": [
+      "Navigate to the homepage of the e-commerce website.",
+      "Locate the search bar at the top of the page.",
+      "Click on the search bar to activate it.",
+      "Type the name of the product you are looking for into the search bar.",
+      "Press the 'Enter' key or click on the search icon/button to initiate the search.",
+      "Wait for the search results to load."
+    ],
+    "expected_result": "The search results page displays a list of products that match the name entered in the search bar. Relevant products, if available, should appear prominently on the page."
+  },
+  {
+    "title": "Add a product to cart and checkout",
+    "steps": [
+      "Navigate to the e-commerce website.",
+      "Search for a product using the search bar.",
+      "Select a product from the search results.",
+      "Click on the 'Add to Cart' button.",
+      "Proceed to the cart page.",
+      "Review the cart items and click on 'Checkout'.",
+      "Enter shipping and billing information.",
+      "Select a payment method and provide payment details.",
+      "Review the order summary and confirm the purchase."
+    ],
+    "expected_result": "The product is successfully added to the cart, and the user completes the purchase after checking out."
+  }
+]
