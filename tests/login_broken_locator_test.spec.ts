@@ -5,7 +5,7 @@ test('User Login with Valid Credentials', async ({ page }) => {
   await page.goto('https://rahulshettyacademy.com/loginpagePractise/');
 
   // Step 2: Fill in username
-  await page.locator('#usernumen').fill('rahulshettyacademy');
+  await page.locator('#username').fill('rahulshettyacademy');
 
   // Step 3: Fill in password
   await page.locator('#password').fill('Learning@830$3mK2');
