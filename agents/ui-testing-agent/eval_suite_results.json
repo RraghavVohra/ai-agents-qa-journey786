@@ -1,0 +1,173 @@
+[
+  {
+    "goal": "Log in with valid credentials and verify successful login",
+    "start_url": "https://rahulshettyacademy.com/loginpagePractise/",
+    "verdict": "pass",
+    "reflection": {
+      "reflected_verdict": "pass",
+      "notes": "All actions were successfully executed as intended: the username and password were typed into their respective fields, the Sign In button was clicked, and the URL change confirmed a successful login."
+    },
+    "trail": [
+      {
+        "turn": 1,
+        "decision": {
+          "action": "type",
+          "target_description": "username input",
+          "value": "rahulshettyacademy",
+          "reasoning": "The username field is empty, and we have the correct username to input before proceeding with login."
+        },
+        "resolved_selector": {
+          "selector": "#username",
+          "confidence": "high"
+        }
+      },
+      {
+        "turn": 2,
+        "decision": {
+          "action": "type",
+          "target_description": "password input",
+          "value": "Learning@830$3mK2",
+          "reasoning": "The password field is empty, and we need to fill in the correct password as provided to complete the login credentials."
+        },
+        "resolved_selector": {
+          "selector": "#password",
+          "confidence": "high"
+        }
+      },
+      {
+        "turn": 3,
+        "decision": {
+          "action": "click",
+          "target_description": "Sign In button",
+          "reasoning": "Both the username and password fields are correctly filled. The next step is to submit the form by clicking the Sign In button."
+        },
+        "resolved_selector": {
+          "selector": "#signInBtn",
+          "confidence": "high"
+        }
+      },
+      {
+        "turn": 4,
+        "decision": {
+          "action": "done",
+          "target_description": "",
+          "reasoning": "The current URL indicates a change from the login page to the shop page, suggesting a successful login. There is no visible error message, and the presence of the shop elements implies the transition was successful."
+        }
+      }
+    ],
+    "turns_used": 4,
+    "name": "Case 1 - Regression baseline (original login)",
+    "expected_verdict": "pass",
+    "note": "Already proven across Days 1-7. Must still pass after this refactor."
+  },
+  {
+    "goal": "Log in with valid credentials and verify successful login",
+    "start_url": "https://the-internet.herokuapp.com/login",
+    "verdict": "pass",
+    "reflection": {
+      "reflected_verdict": "pass_with_notes",
+      "notes": "The trail appears to indicate a successful login with the given credentials, as inferred from the change in URL and success message. However, the direct verification of the success message's presence or content is not explicitly logged. It's worthwhile noting for a human QA to ensure that the success message is indeed verified in other test cases or steps. Otherwise, the actions were correctly executed with high confidence selectors and achieved the intended goal."
+    },
+    "trail": [
+      {
+        "turn": 1,
+        "decision": {
+          "action": "type",
+          "target_description": "username input field",
+          "value": "tomsmith",
+          "reasoning": "To initiate the login process, I need to enter the valid username into the username input field."
+        },
+        "resolved_selector": {
+          "selector": "#username",
+          "confidence": "high"
+        }
+      },
+      {
+        "turn": 2,
+        "decision": {
+          "action": "type",
+          "target_description": "password input field",
+          "value": "SuperSecretPassword!",
+          "reasoning": "To complete the login process, I need to enter the valid password into the password input field."
+        },
+        "resolved_selector": {
+          "selector": "input[type='password']",
+          "confidence": "high"
+        }
+      },
+      {
+        "turn": 3,
+        "decision": {
+          "action": "click",
+          "target_description": "login button",
+          "reasoning": "With both the username and password entered correctly, clicking the login button will submit the form to authenticate the user."
+        },
+        "resolved_selector": {
+          "selector": "form#login button[type='submit']",
+          "confidence": "high"
+        }
+      },
+      {
+        "turn": 4,
+        "decision": {
+          "action": "done",
+          "target_description": "",
+          "reasoning": "The change in URL to '/secure' and the presence of a success message indicate that the login was successful."
+        }
+      }
+    ],
+    "turns_used": 4,
+    "name": "Case 2 - Same goal, completely different page",
+    "expected_verdict": "pass",
+    "note": "Different DOM, different field names, different site entirely. Credentials are shown directly on the page, same as Case 1's pattern."
+  },
+  {
+    "goal": "Select Option 2 from the dropdown and verify it is selected",
+    "start_url": "https://the-internet.herokuapp.com/dropdown",
+    "verdict": "pass",
+    "reflection": {
+      "reflected_verdict": "pass",
+      "notes": "The intended action of selecting 'Option 2' from the dropdown and verifying it was selected, was successfully completed without any issues. The resolved selectors were confidently matched and executed as planned."
+    },
+    "trail": [
+      {
+        "turn": 1,
+        "decision": {
+          "action": "select",
+          "target_description": "#dropdown",
+          "value": "Option 2",
+          "reasoning": "To accomplish the goal, I need to select 'Option 2' from the dropdown menu."
+        },
+        "resolved_selector": {
+          "selector": "#dropdown",
+          "confidence": "high"
+        }
+      },
+      {
+        "turn": 2,
+        "decision": {
+          "action": "assert",
+          "target_description": "#dropdown option[selected]",
+          "value": "Option 2",
+          "reasoning": "Verify that after selecting, 'Option 2' is indeed the selected option in the dropdown."
+        },
+        "resolved_selector": {
+          "selector": "#dropdown option[selected]",
+          "confidence": "high"
+        }
+      },
+      {
+        "turn": 3,
+        "decision": {
+          "action": "done",
+          "target_description": "",
+          "reasoning": "The page confirms that 'Option 2' is selected as intended, thereby meeting the goal."
+        }
+      }
+    ],
+    "turns_used": 3,
+    "name": "Case 3 - Different interaction type (dropdown)",
+    "expected_verdict": "pass",
+    "note": "Originally exposed a real gap: no 'select' action existed for native <select> dropdowns (click/type don't work on them). Now fixed in day8_ui_agent_core.py - this case should genuinely pass, and stays in the suite as a regression check for that fix going forward."
+  }
+]
