@@ -85,8 +85,8 @@ decide_tools = [{
                 "reasoning": {"type": "string"},
                 "assert_type": {
                     "type": "string",
-                    "enum": ["element_text", "current_url", "element_class"],
-                    "description": "Only used when action is 'assert'. 'element_text' (default) checks a specific element's visible text. 'current_url' checks the browser's actual current URL. 'element_class' checks whether a specific CSS class is genuinely present in an element's class attribute - use this instead of 'element_text' whenever you're trying to confirm a class name; a class name is NOT visible text and checking for it as text will give unreliable results."
+                    "enum": ["element_text", "current_url", "element_class", "image_loaded"],
+                    "description": "Only used when action is 'assert'. 'element_text' (default) checks a specific element's visible text. 'current_url' checks the browser's actual current URL. 'element_class' checks whether a specific CSS class is genuinely present in an element's class attribute. 'image_loaded' checks whether an <img> element actually loaded correctly (not broken/404) - use this instead of 'element_text' for images, since images have no text content."
                 }
             },
             "required": ["action", "target_description", "reasoning"]
@@ -134,7 +134,15 @@ decide_system_prompt = (
     "check for a class name using 'element_text' - a class is an "
     "attribute, not visible text, and checking it that way gives "
     "unreliable results (it may falsely pass or fail for reasons unrelated "
-    "to whether the class is actually present)."
+    "to whether the class is actually present). "
+    "To check whether an IMAGE actually loaded (not broken/404), set "
+    "assert_type to 'image_loaded' - never use 'element_text' on an <img>, "
+    "images have no text content and that check can never succeed. "
+    "Note: assert checks now tolerate a selector matching several genuinely "
+    "identical elements (common with carousel/slider-cloned content) by "
+    "checking the first match - you do NOT need to keep refining a "
+    "selector to make it uniquely match exactly one element for a presence "
+    "check; a reasonably-scoped selector is enough."
 )
 
 
@@ -158,7 +166,12 @@ resolve_tools = [{
 resolve_system_prompt = (
     "You are given a plain-English description of a UI element and the real "
     "page HTML. Return one precise CSS selector that uniquely matches that "
-    "element on this exact page."
+    "element on this exact page. "
+    "IMPORTANT: never use ':contains(...)' - it is jQuery syntax, not valid "
+    "CSS, and will always fail with a syntax error in a real browser. If you "
+    "need to match an element by its text, rely on structural/attribute "
+    "selectors instead (tag names, classes, ids, nth-child position) - do "
+    "not invent text-matching pseudo-classes."
 )
 
 def resolve_selector(target_description, dom_html):
@@ -336,6 +349,14 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
     # Always navigate fresh - whether this is a brand-new tab or the same
     # reused one, this forces a real reload so each task starts clean.
     page.goto(start_url)
+    # Tracks WHERE in messages the current DOM snapshot lives, so it can be
+    # replaced (not endlessly appended) each turn. This is the real fix for
+    # a real crash: without this, every turn adds ANOTHER full page dump on
+    # top of all previous ones - 7 turns means 7 stacked page snapshots in
+    # context, which is what blew past the 128k token limit. ReAct's actual
+    # memory value is the compact action/outcome history, not repeated full
+    # pages - only the CURRENT page needs to be present, not every past one.
+    last_dom_message_index = None
 
     try:
         for turn in range(1, max_turns + 1):
@@ -344,10 +365,17 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
             live_dom = get_live_dom(page)
             current_url = page.url
 
+            # Remove the PREVIOUS turn's full page snapshot before adding
+            # this turn's - keeps exactly one DOM snapshot in context,
+            # ever, no matter how many turns this task takes.
+            if last_dom_message_index is not None:
+                del messages[last_dom_message_index]
+
             messages.append({
                 "role": "user",
                 "content": f"Current URL: {current_url}\n\nCurrent page HTML:\n{live_dom}"
             })
+            last_dom_message_index = len(messages) - 1
 
             response = client.chat.completions.create(
                 model="gpt-4o",
@@ -433,11 +461,14 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
                     elif action["action"] == "select":
                         page.select_option(selector, label=action["value"])
                     elif action["action"] == "assert" and assert_type == "element_class":
-                        # A class name isn't visible text - read the real
-                        # class ATTRIBUTE and check exact token membership,
-                        # so 'active' can't falsely match 'inactive' via a
-                        # loose substring check the way text_content() would.
-                        actual_classes = (page.locator(selector).get_attribute("class") or "").split()
+                        # .first is deliberate and safe here (read-only check,
+                        # not an interaction) - carousel/slider libraries
+                        # commonly clone slide DOM for seamless looping, so a
+                        # correct selector can still legitimately match
+                        # several genuinely-identical elements. Forcing
+                        # uniqueness for a presence check wastes turns
+                        # chasing a selector that doesn't need to exist.
+                        actual_classes = (page.locator(selector).first.get_attribute("class") or "").split()
                         turn_record["checked_classes"] = actual_classes
                         if action.get("value") and action["value"] not in actual_classes:
                             raise Exception(
@@ -445,8 +476,24 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
                                 f"'{action['value']}' on element, but element's "
                                 f"actual classes were {actual_classes}"
                             )
+                    elif action["action"] == "assert" and assert_type == "image_loaded":
+                        # The real, correct check for a broken/404 image - a
+                        # failed image request still 'completes' loading, it
+                        # just never gets real pixel dimensions. Checking
+                        # text_content() on an <img> was never going to work;
+                        # images have no text.
+                        is_loaded = page.locator(selector).first.evaluate(
+                            "el => el.complete && el.naturalWidth > 0"
+                        )
+                        turn_record["image_loaded"] = is_loaded
+                        if not is_loaded:
+                            raise Exception(
+                                "Image did not load correctly - element matched, "
+                                "but naturalWidth is 0 or loading never completed "
+                                "(this is the real signature of a broken/404 image)"
+                            )
                     elif action["action"] == "assert":
-                        actual_text = page.locator(selector).text_content() or ""
+                        actual_text = page.locator(selector).first.text_content() or ""
                         if action.get("value") and action["value"] not in actual_text:
                             raise Exception(
                                 f"Assertion did not match: expected '{action['value']}' "
