@@ -315,22 +315,66 @@ def get_live_dom(page, retries=3, retry_delay_ms=500):
     raise last_error
 
 
-# --- Site-specific lessons learned today - reused for every task, so the
-# agent doesn't have to re-discover the same things turn after turn. ------
-SITE_NOTES = (
-    "Known things about THIS site, learned from real testing:\n"
-    "- Filter/category tabs: check the 'active' class on the clicked "
-    "element (assert_type 'element_class'), not the resulting content "
-    "text - content is often truncated with '..' and won't match exactly.\n"
-    "- Social/external links open in a new tab (target='_blank') - check "
-    "the real href via assert_type 'element_href', don't try to navigate "
-    "and check current_url for these.\n"
-    "- For images, always use assert_type 'image_loaded', never "
-    "'element_text' - images have no text content.\n"
-    "- A floating chat widget can visually overlap other buttons - if a "
-    "click times out with 'intercepts pointer events', that's usually "
-    "just this overlap, not a wrong selector."
+# --- Procedural memory, now self-updating (the Curator) --------------------
+# Was a hardcoded Python string before - now a real file on disk, so new
+# lessons can actually get added without a human editing code. This is the
+# missing third role from the ACE pattern (Generator -> Reflector -> Curator):
+# our Decide call is the Generator, summarize_evidence() is already the
+# Reflector - this is the Curator, closing the loop.
+SITE_NOTES_PATH = "site_notes.txt"
+
+def read_site_notes():
+    if os.path.exists(SITE_NOTES_PATH):
+        content = open(SITE_NOTES_PATH, "r", encoding="utf-8").read().strip()
+        return content if content else "(no notes yet)"
+    return "(no notes yet - this may be the first run on this site)"
+
+def append_site_note(lesson):
+    with open(SITE_NOTES_PATH, "a", encoding="utf-8") as f:
+        f.write(f"- {lesson}\n")
+
+curator_tools = [{
+    "type": "function",
+    "function": {
+        "name": "curate_lesson",
+        "description": "Decide whether this task run revealed a genuinely reusable lesson for FUTURE, DIFFERENT tasks on this same site.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "has_reusable_lesson": {"type": "boolean"},
+                "lesson": {
+                    "type": "string",
+                    "description": "One concise, reusable sentence - a real generalizable pattern (a UI quirk, which check-type worked, a selector strategy that failed) - NOT a restatement of this one task's outcome. Empty string if has_reusable_lesson is false."
+                }
+            },
+            "required": ["has_reusable_lesson", "lesson"]
+        }
+    }
+}]
+
+curator_system_prompt = (
+    "You are reviewing a completed task's evidence, looking specifically for "
+    "a REUSABLE lesson that would help an agent perform BETTER on a FUTURE, "
+    "DIFFERENT task on this same website. Only flag something if it's a real, "
+    "generalizable pattern - not just a restatement of this specific task's "
+    "outcome. Be honest and conservative: most runs will have nothing new to "
+    "add, and that's the correct, expected answer most of the time."
 )
+
+def curate_lesson(goal, evidence, trail):
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": curator_system_prompt},
+            {"role": "user", "content": (
+                f"Goal: {goal}\n\nEvidence: {json.dumps(evidence, indent=2)}\n\n"
+                f"Full trail:\n{json.dumps(trail, indent=2)}"
+            )}
+        ],
+        tools=curator_tools,
+        tool_choice={"type": "function", "function": {"name": "curate_lesson"}}
+    )
+    return json.loads(response.choices[0].message.tool_calls[0].function.arguments)
 
 
 # --- The reusable engine, Human-in-the-Loop ending --------------------------
@@ -371,9 +415,14 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
     if acceptance_criteria:
         criteria_note = f"\n\nACCEPTANCE CRITERIA to check via 'assert': {acceptance_criteria}"
 
+    # Read fresh from disk EVERY call - if an earlier task in this same
+    # batch curated a new lesson, this task sees it immediately, not just
+    # on the next separate run.
+    site_notes_text = read_site_notes()
+
     messages = [
         {"role": "system", "content": decide_system_prompt},
-        {"role": "user", "content": f"Goal: {goal}{credential_note}{criteria_note}\n\n{SITE_NOTES}"}
+        {"role": "user", "content": f"Goal: {goal}{credential_note}{criteria_note}\n\nKnown things about this site:\n{site_notes_text}"}
     ]
 
     trail = []
@@ -609,6 +658,15 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
 
         # Neutral evidence summary - replaces reflect_on_trail entirely.
         evidence = summarize_evidence(goal, acceptance_criteria, trail)
+
+        # Curator - the missing third role. Looks at what just happened and
+        # decides if there's a real, reusable lesson worth saving for future
+        # tasks. Most runs correctly produce nothing new - that's expected,
+        # not a failure of this step.
+        curation = curate_lesson(goal, evidence, trail)
+        if curation.get("has_reusable_lesson") and curation.get("lesson"):
+            append_site_note(curation["lesson"])
+            print(f"\n[CURATOR] New lesson saved: {curation['lesson']}")
 
     finally:
         # Only close the tab if THIS call created it - if a batch runner
