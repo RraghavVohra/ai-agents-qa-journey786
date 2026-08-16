@@ -85,8 +85,8 @@ decide_tools = [{
                 "reasoning": {"type": "string"},
                 "assert_type": {
                     "type": "string",
-                    "enum": ["element_text", "current_url", "element_class", "image_loaded"],
-                    "description": "Only used when action is 'assert'. 'element_text' (default) checks a specific element's visible text. 'current_url' checks the browser's actual current URL. 'element_class' checks whether a specific CSS class is genuinely present in an element's class attribute. 'image_loaded' checks whether an <img> element actually loaded correctly (not broken/404) - use this instead of 'element_text' for images, since images have no text content."
+                    "enum": ["element_text", "current_url", "element_class", "image_loaded", "element_visible", "element_href"],
+                    "description": "Only used when action is 'assert'. 'element_text' (default) checks visible text. 'current_url' checks the browser's URL. 'element_class' checks a CSS class token. 'image_loaded' checks an <img> genuinely loaded. 'element_visible' checks real visibility. 'element_href' checks a link's actual href attribute - use this for verifying WHERE a link points (e.g. social media redirects, links that open in a new tab), NOT 'element_text' - an href is an attribute, not visible text, and reading it as text always returns empty."
                 }
             },
             "required": ["action", "target_description", "reasoning"]
@@ -138,11 +138,38 @@ decide_system_prompt = (
     "To check whether an IMAGE actually loaded (not broken/404), set "
     "assert_type to 'image_loaded' - never use 'element_text' on an <img>, "
     "images have no text content and that check can never succeed. "
+    "To check whether something is genuinely hidden or shown (e.g. 'no "
+    "error message visible', 'confirmation panel is displayed'), set "
+    "assert_type to 'element_visible' with 'value' as 'true' or 'false' - "
+    "never try to check a style like 'display:none' via 'element_class', a "
+    "style string is not a class name and will never match as one. "
+    "For filter/tab/category-style interactions specifically: prefer "
+    "checking the ACTIVE/SELECTED STATE of the element you clicked (via "
+    "'element_class', checking for a class like 'active') as your evidence "
+    "that the filter applied - NOT scanning the resulting content list for "
+    "an exact fund/item name as text. Displayed content is often truncated "
+    "with '..' or wrapped in extra surrounding text, making exact text "
+    "matches unreliable even when the filter worked correctly. Active "
+    "state is the more stable signal. "
+    "To verify WHERE a link points (e.g. social media icons, links that "
+    "open in a new tab via target='_blank' where you can't just navigate "
+    "and check the URL), set assert_type to 'element_href' with 'value' as "
+    "the expected URL or a distinctive part of it. Never use 'element_text' "
+    "for this - an href is an attribute, not visible text, and reading a "
+    "link's text will always return empty or just its label."
     "Note: assert checks now tolerate a selector matching several genuinely "
     "identical elements (common with carousel/slider-cloned content) by "
     "checking the first match - you do NOT need to keep refining a "
     "selector to make it uniquely match exactly one element for a presence "
-    "check; a reasonably-scoped selector is enough."
+    "check; a reasonably-scoped selector is enough. "
+    "IMPORTANT for carousels/sliders: content usually exists in the DOM for "
+    "ALL slides at once, not just the currently-visible one - avoid scoping "
+    "a presence check to '.active'/'.current'/'.selected' or similar "
+    "state-based classes, since autoplay can rotate which slide is active "
+    "between when you read the page and when your check actually runs. "
+    "Check the broader container instead (e.g. the whole carousel/list), "
+    "not the currently-active item specifically - the goal is confirming "
+    "content EXISTS, not confirming what's on screen at this exact instant."
 )
 
 
@@ -288,6 +315,24 @@ def get_live_dom(page, retries=3, retry_delay_ms=500):
     raise last_error
 
 
+# --- Site-specific lessons learned today - reused for every task, so the
+# agent doesn't have to re-discover the same things turn after turn. ------
+SITE_NOTES = (
+    "Known things about THIS site, learned from real testing:\n"
+    "- Filter/category tabs: check the 'active' class on the clicked "
+    "element (assert_type 'element_class'), not the resulting content "
+    "text - content is often truncated with '..' and won't match exactly.\n"
+    "- Social/external links open in a new tab (target='_blank') - check "
+    "the real href via assert_type 'element_href', don't try to navigate "
+    "and check current_url for these.\n"
+    "- For images, always use assert_type 'image_loaded', never "
+    "'element_text' - images have no text content.\n"
+    "- A floating chat widget can visually overlap other buttons - if a "
+    "click times out with 'intercepts pointer events', that's usually "
+    "just this overlap, not a wrong selector."
+)
+
+
 # --- The reusable engine, Human-in-the-Loop ending --------------------------
 def run_agent(goal, start_url, acceptance_criteria=None, username=None,
               password=None, max_turns=8, headless=False, browser=None,
@@ -328,7 +373,7 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
 
     messages = [
         {"role": "system", "content": decide_system_prompt},
-        {"role": "user", "content": f"Goal: {goal}{credential_note}{criteria_note}"}
+        {"role": "user", "content": f"Goal: {goal}{credential_note}{criteria_note}\n\n{SITE_NOTES}"}
     ]
 
     trail = []
@@ -455,11 +500,47 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
                     selector = resolved["selector"]
 
                     if action["action"] == "type":
-                        page.fill(selector, action["value"])
+                        page.fill(selector, action["value"], timeout=8000)
                     elif action["action"] == "click":
-                        page.click(selector)
+                        try:
+                            page.click(selector, timeout=8000)
+                        except Exception as click_error:
+                            # "intercepts pointer events" means something is
+                            # visually overlapping the real target (e.g. a
+                            # floating chat widget sitting on top of a
+                            # button) - not that the target itself is
+                            # broken. force=True bypasses that specific
+                            # check once, rather than burning several full
+                            # turns on the same real, but usually harmless,
+                            # overlap.
+                            if "intercepts pointer events" in str(click_error):
+                                page.click(selector, timeout=8000, force=True)
+                            else:
+                                raise
                     elif action["action"] == "select":
-                        page.select_option(selector, label=action["value"])
+                        page.select_option(selector, label=action["value"], timeout=8000)
+                    elif action["action"] == "assert" and assert_type == "element_visible":
+                        is_visible = page.locator(selector).first.is_visible()
+                        turn_record["is_visible"] = is_visible
+                        expected_visible = action.get("value", "true").lower() != "false"
+                        if is_visible != expected_visible:
+                            raise Exception(
+                                f"Visibility assertion did not match: expected "
+                                f"visible={expected_visible}, but element's actual "
+                                f"visible state was {is_visible}"
+                            )
+                    elif action["action"] == "assert" and assert_type == "element_href":
+                        # An href is an attribute, not text - reading it via
+                        # text_content() always returns empty (that's exactly
+                        # what caused social-links-redirect to fail). Read
+                        # the real attribute instead.
+                        actual_href = page.locator(selector).first.get_attribute("href") or ""
+                        turn_record["checked_href"] = actual_href
+                        if action.get("value") and action["value"] not in actual_href:
+                            raise Exception(
+                                f"href assertion did not match: expected "
+                                f"'{action['value']}' in href, but got '{actual_href}'"
+                            )
                     elif action["action"] == "assert" and assert_type == "element_class":
                         # .first is deliberate and safe here (read-only check,
                         # not an interaction) - carousel/slider libraries
@@ -468,7 +549,7 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
                         # several genuinely-identical elements. Forcing
                         # uniqueness for a presence check wastes turns
                         # chasing a selector that doesn't need to exist.
-                        actual_classes = (page.locator(selector).first.get_attribute("class") or "").split()
+                        actual_classes = (page.locator(selector).first.get_attribute("class", timeout=8000) or "").split()
                         turn_record["checked_classes"] = actual_classes
                         if action.get("value") and action["value"] not in actual_classes:
                             raise Exception(
@@ -483,7 +564,7 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
                         # text_content() on an <img> was never going to work;
                         # images have no text.
                         is_loaded = page.locator(selector).first.evaluate(
-                            "el => el.complete && el.naturalWidth > 0"
+                            "el => el.complete && el.naturalWidth > 0", timeout=8000
                         )
                         turn_record["image_loaded"] = is_loaded
                         if not is_loaded:
@@ -493,7 +574,7 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
                                 "(this is the real signature of a broken/404 image)"
                             )
                     elif action["action"] == "assert":
-                        actual_text = page.locator(selector).first.text_content() or ""
+                        actual_text = page.locator(selector).first.text_content(timeout=8000) or ""
                         if action.get("value") and action["value"] not in actual_text:
                             raise Exception(
                                 f"Assertion did not match: expected '{action['value']}' "

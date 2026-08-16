@@ -20,14 +20,7 @@ from day10_tasks import TASKS
 # Batch 2: read-only presence checks - no forms, no modals, no external
 # redirects yet. Same instinct as the nav batch: group by similar risk
 # before moving to the harder, less-proven task types.
-TASK_IDS_TO_RUN = [
-    "logo-visible",
-    "header-contact-info",
-    "achievements-visible",
-    "testimonials-visible",
-    "sebi-disclosure-check",
-    "broken-image-check",
-]
+TASK_IDS_TO_RUN = ["category-debt"]
 
 REPORT_PATH = "day10_evidence_report.json"
 if os.path.exists(REPORT_PATH):
