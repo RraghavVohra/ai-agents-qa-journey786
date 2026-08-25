@@ -14,13 +14,11 @@ covering all 22 tasks over multiple sessions.
 import json
 import os
 from playwright.sync_api import sync_playwright
-from day10_ui_agent_core import run_agent
+from day10_ui_agent_core import run_agent, TokenTracker
 from day10_tasks import TASKS
 
-# Batch 2: read-only presence checks - no forms, no modals, no external
-# redirects yet. Same instinct as the nav batch: group by similar risk
-# before moving to the harder, less-proven task types.
-TASK_IDS_TO_RUN = ["category-equity", "category-debt"]
+# Batch: which tasks to run this session
+TASK_IDS_TO_RUN = ["category-debt"]
 
 REPORT_PATH = "day10_evidence_report.json"
 if os.path.exists(REPORT_PATH):
@@ -40,6 +38,11 @@ if len(selected_tasks) < len(TASK_IDS_TO_RUN):
     print(f"Skipping already-completed task(s): {sorted(skipped)}")
 
 new_results = []
+
+# ONE tracker for the WHOLE session - every task's API calls add to this
+# same running total, giving a real session-level cost/token number, not
+# just isolated per-task numbers that never get summed.
+session_tracker = TokenTracker()
 
 # ONE browser + ONE context + ONE page for the whole batch. Genuinely one
 # tab, reused task after task - each task still starts clean because
@@ -63,11 +66,14 @@ with sync_playwright() as p:
             acceptance_criteria=task["acceptance_criteria"],
             browser=shared_browser,
             context=shared_context,
-            page=shared_page
+            page=shared_page,
+            tracker=session_tracker
         )
         result["task_id"] = task["id"]
         new_results.append(result)
         results.append(result)
+        print(f"[usage] this task: {result['token_usage']['total_tokens']} tokens, "
+              f"{result['token_usage']['api_calls']} API calls")
 
     shared_page.close()
     shared_context.close()
@@ -91,3 +97,18 @@ with open(REPORT_PATH, "w", encoding="utf-8") as f:
     json.dump(results, f, indent=2)
 print(f"\nTotal progress: {len(results)}/{len(TASKS)} tasks covered.")
 print(f"Full evidence saved to {REPORT_PATH}")
+
+# --- SESSION COST SUMMARY - the actual observability answer for Abhishek --
+session_summary = session_tracker.summary()
+print("\n" + "=" * 70)
+print("SESSION TOKEN & COST SUMMARY")
+print("=" * 70)
+print(f"Tasks this session : {len(new_results)}")
+print(f"Total API calls     : {session_summary['api_calls']}")
+print(f"Prompt tokens       : {session_summary['prompt_tokens']:,}")
+print(f"Completion tokens   : {session_summary['completion_tokens']:,}")
+print(f"Total tokens        : {session_summary['total_tokens']:,}")
+print(f"Estimated cost (USD): ${session_summary['estimated_cost_usd']}")
+if new_results:
+    print(f"Avg tokens/task     : {session_summary['total_tokens'] // len(new_results):,}")
+    print(f"Avg cost/task (USD) : ${round(session_summary['estimated_cost_usd'] / len(new_results), 4)}")

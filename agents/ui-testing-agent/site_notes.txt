@@ -3,3 +3,4 @@
 - For images, always use assert_type 'image_loaded', never 'element_text' - images have no text content.
 - A floating chat widget can visually overlap other buttons - if a click times out with 'intercepts pointer events', that's usually just this overlap, not a wrong selector.- When interacting with category filters, verify not just the active state with a class assertion but also ensure the content list updates accordingly.
 - Always use valid CSS selectors; 'querySelectorAll' does not support pseudo-classes like ':contains'.
+- When verifying filter activation by asserting the presence of an 'active' class on an element, ensure the class toggles as expected by consulting both the UI and the expected HTML structure, as this can identify issues with class update behavior or element overlap.

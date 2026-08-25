@@ -70,6 +70,46 @@ from dotenv import load_dotenv
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# --- Cost observability - the piece that was missing all along -------------
+# GPT-4o pricing as of 2026: $2.50 / 1M input tokens, $10.00 / 1M output
+# tokens. OpenAI revises pricing over time - verify against
+# https://openai.com/api/pricing if this has been a while.
+PRICE_PER_1M_INPUT = 2.50
+PRICE_PER_1M_OUTPUT = 10.00
+
+class TokenTracker:
+    """
+    Accumulates real token usage across every API call in a task (or a
+    whole session, if one tracker is shared across run_agent() calls).
+    This is what industry calls agent observability - previously we talked
+    about minimizing tokens without ever actually measuring them.
+    """
+    def __init__(self):
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.api_calls = 0
+
+    def add(self, response):
+        usage = response.usage
+        self.prompt_tokens += usage.prompt_tokens
+        self.completion_tokens += usage.completion_tokens
+        self.api_calls += 1
+
+    def estimated_cost_usd(self):
+        return (
+            (self.prompt_tokens / 1_000_000) * PRICE_PER_1M_INPUT
+            + (self.completion_tokens / 1_000_000) * PRICE_PER_1M_OUTPUT
+        )
+
+    def summary(self):
+        return {
+            "api_calls": self.api_calls,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.prompt_tokens + self.completion_tokens,
+            "estimated_cost_usd": round(self.estimated_cost_usd(), 4)
+        }
+
 # --- Brain's tool schema - 'done' and 'fail' meanings narrowed -------------
 decide_tools = [{
     "type": "function",
@@ -201,7 +241,7 @@ resolve_system_prompt = (
     "not invent text-matching pseudo-classes."
 )
 
-def resolve_selector(target_description, dom_html):
+def resolve_selector(target_description, dom_html, tracker=None):
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -211,6 +251,8 @@ def resolve_selector(target_description, dom_html):
         tools=resolve_tools,
         tool_choice={"type": "function", "function": {"name": "resolve_selector"}}
     )
+    if tracker:
+        tracker.add(response)
     return json.loads(response.choices[0].message.tool_calls[0].function.arguments)
 
 
@@ -256,7 +298,7 @@ evidence_system_prompt = (
     "guessing at an outcome."
 )
 
-def summarize_evidence(goal, acceptance_criteria, trail):
+def summarize_evidence(goal, acceptance_criteria, trail, tracker=None):
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -270,6 +312,8 @@ def summarize_evidence(goal, acceptance_criteria, trail):
         tools=evidence_tools,
         tool_choice={"type": "function", "function": {"name": "summarize_evidence"}}
     )
+    if tracker:
+        tracker.add(response)
     return json.loads(response.choices[0].message.tool_calls[0].function.arguments)
 
 
@@ -361,7 +405,7 @@ curator_system_prompt = (
     "add, and that's the correct, expected answer most of the time."
 )
 
-def curate_lesson(goal, evidence, trail):
+def curate_lesson(goal, evidence, trail, tracker=None):
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -374,13 +418,15 @@ def curate_lesson(goal, evidence, trail):
         tools=curator_tools,
         tool_choice={"type": "function", "function": {"name": "curate_lesson"}}
     )
+    if tracker:
+        tracker.add(response)
     return json.loads(response.choices[0].message.tool_calls[0].function.arguments)
 
 
 # --- The reusable engine, Human-in-the-Loop ending --------------------------
 def run_agent(goal, start_url, acceptance_criteria=None, username=None,
               password=None, max_turns=8, headless=False, browser=None,
-              context=None, page=None):
+              context=None, page=None, tracker=None):
     """
     Runs the decide->resolve->act->observe loop with ReAct memory (Day 6).
     Ends with neutral evidence (Day 10), NOT a pass/fail verdict.
@@ -394,14 +440,26 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
     opening one new tab in the shared context. If nothing is provided,
     launches and closes everything itself (a plain standalone run).
 
+    tracker: optional shared TokenTracker. Pass ONE shared tracker across
+    many run_agent() calls (like a batch) to get a real SESSION total, not
+    just per-task numbers. If not provided, this call gets its own.
+
     Returns a dict:
     {
         goal, start_url, acceptance_criteria,
         agent_completion_status,   # OPERATIONAL only: completed / blocked / max_turns_reached
         evidence,                  # {actions_completed, evidence_observed, gaps_or_concerns}
-        trail, turns_used
+        trail, turns_used,
+        token_usage                # {api_calls, prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd} - THIS task's share
     }
     """
+    if tracker is None:
+        tracker = TokenTracker()
+    # Snapshot where this task's own usage starts, so we can report its
+    # OWN share even when sharing one tracker across a whole batch.
+    tokens_before = tracker.prompt_tokens + tracker.completion_tokens
+    calls_before = tracker.api_calls
+
     credential_note = ""
     if username is not None or password is not None:
         credential_note = (
@@ -477,6 +535,7 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
                 tools=decide_tools,
                 tool_choice={"type": "function", "function": {"name": "perform_next_action"}}
             )
+            tracker.add(response)
             assistant_msg = response.choices[0].message
             tool_call = assistant_msg.tool_calls[0]
             action = json.loads(tool_call.function.arguments)
@@ -543,7 +602,7 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
                     })
 
                 else:
-                    resolved = resolve_selector(action["target_description"], live_dom)
+                    resolved = resolve_selector(action["target_description"], live_dom, tracker)
                     print("Resolved selector:", json.dumps(resolved, indent=2))
                     turn_record["resolved_selector"] = resolved
                     selector = resolved["selector"]
@@ -657,13 +716,13 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
             trail.append(turn_record)
 
         # Neutral evidence summary - replaces reflect_on_trail entirely.
-        evidence = summarize_evidence(goal, acceptance_criteria, trail)
+        evidence = summarize_evidence(goal, acceptance_criteria, trail, tracker)
 
         # Curator - the missing third role. Looks at what just happened and
         # decides if there's a real, reusable lesson worth saving for future
         # tasks. Most runs correctly produce nothing new - that's expected,
         # not a failure of this step.
-        curation = curate_lesson(goal, evidence, trail)
+        curation = curate_lesson(goal, evidence, trail, tracker)
         if curation.get("has_reusable_lesson") and curation.get("lesson"):
             append_site_note(curation["lesson"])
             print(f"\n[CURATOR] New lesson saved: {curation['lesson']}")
@@ -679,6 +738,13 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
             browser.close()
             playwright_cm.stop()
 
+    # This task's OWN share of usage, even when tracker is shared across a
+    # whole batch - computed from the before/after snapshot taken at the top.
+    task_token_usage = {
+        "api_calls": tracker.api_calls - calls_before,
+        "total_tokens": (tracker.prompt_tokens + tracker.completion_tokens) - tokens_before,
+    }
+
     return {
         "goal": goal,
         "start_url": start_url,
@@ -686,5 +752,6 @@ def run_agent(goal, start_url, acceptance_criteria=None, username=None,
         "agent_completion_status": agent_completion_status,
         "evidence": evidence,
         "trail": trail,
-        "turns_used": len(trail)
+        "turns_used": len(trail),
+        "token_usage": task_token_usage
     }
