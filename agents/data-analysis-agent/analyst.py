@@ -56,11 +56,17 @@ CODE_GEN_TOOL = {
                         "pd.read_csv(CSV_PATH) where CSV_PATH is already "
                         "defined -- do not redefine it; compute a result "
                         "for the hypothesis; and print(json.dumps(result)) "
-                        "as the LAST line, where result is a dict with at "
-                        "least a 'summary' key (short string) and a "
-                        "'value' key (the computed number/stat). Only use "
-                        "pandas, numpy, scipy, and json. No file writes, "
-                        "no network calls, no other imports."
+                        "as the LAST line, where result is a dict "
+                        "containing: a 'summary' key (short string), a "
+                        "'value' key (the computed number/stat), and a "
+                        "'p_value' key -- set to the numeric p-value if "
+                        "you ran a significance test (ANOVA, correlation, "
+                        "chi-squared, etc.), or JSON null if this is a "
+                        "purely descriptive result with no significance "
+                        "test. The 'p_value' key must always be present, "
+                        "never omitted. Only use pandas, numpy, scipy, "
+                        "and json. No file writes, no network calls, no "
+                        "other imports."
                     ),
                 }
             },
@@ -76,7 +82,7 @@ Write Python code to test that specific hypothesis using pandas.
 Rules:
 - Only use pandas, numpy, scipy, and json. Nothing else.
 - Assume a variable CSV_PATH already holds the path to the CSV -- just use pd.read_csv(CSV_PATH).
-- Your code's last line must be print(json.dumps(result)), where result is a dict with at least 'summary' and 'value' keys.
+- Your code's last line must be print(json.dumps(result)), where result is a dict with 'summary', 'value', and 'p_value' keys. 'p_value' must ALWAYS be present -- the numeric p-value if you ran a significance test, or null if this is purely descriptive with no test.
 - Do not write files, make network calls, or use eval/exec.
 - Keep it short and directly focused on testing the one hypothesis given.
 """
