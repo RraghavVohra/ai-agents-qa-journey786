@@ -1,1 +1,6 @@
+## All the Libraries used
 pandas
+openai
+python-dotenv
+requests
+scipy
