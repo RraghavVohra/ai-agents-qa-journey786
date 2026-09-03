@@ -4,17 +4,24 @@ verifier.py -- Step 5 of the Data-Analysis Agent (THE differentiator)
 Job of this file: decide whether an Analyst's result should be trusted,
 before it's allowed anywhere near a report.
 
-Approach: STATISTICAL RE-TEST. Rerun the exact same generated code on
-two random halves of the data. If the two halves agree on the
-conclusion, the pattern likely holds. If they disagree, it doesn't
-survive being re-tested and gets rejected -- no matter how good the
-p-value on the full dataset looked.
+TWO verification methods now, used for different situations:
 
-This is the cheap, deterministic first-pass approach (no extra LLM
-call). A second-pass LLM cross-check can be added later for cases this
-can't resolve alone (e.g. purely descriptive results with no
-significance test to replicate) -- worth discussing with Abhishek once
-this base version is proven.
+1. STATISTICAL RE-TEST (cheap, deterministic, no LLM call): for results
+   that have a real p-value. Rerun the exact same generated code on two
+   random halves of the data. If the two halves agree on the
+   conclusion, the pattern likely holds. If they disagree, reject it --
+   no matter how good the p-value on the full dataset looked.
+
+2. LLM CROSS-CHECK (a second opinion, costs one extra API call): for
+   purely descriptive results with NO p-value to statistically
+   replicate -- there's no number to re-test, so a second LLM reviews
+   the METHOD itself, playing skeptical reviewer. Catches things stats
+   can't: a misleading comparison, a conclusion the code doesn't
+   actually support, a tiny cherry-picked subset presented as general.
+
+This hybrid is the actual differentiator: verify with statistics where
+a number exists to check, verify with a second opinion where it
+doesn't -- rather than silently trusting anything without a p-value.
 """
 
 import os
@@ -22,8 +29,66 @@ import sys
 import json
 import tempfile
 import pandas as pd
+from openai import OpenAI
+from dotenv import load_dotenv
 
 from analyst import run_in_sandbox
+
+load_dotenv()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+CROSS_CHECK_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "review_finding",
+        "description": "Critically review a data-analysis finding that has no statistical significance test to fall back on.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "sound": {
+                    "type": "boolean",
+                    "description": (
+                        "True if the method and conclusion are "
+                        "methodologically sound and fairly stated. False "
+                        "if there's a real flaw -- e.g. a misleading "
+                        "comparison, groups that aren't actually "
+                        "comparable, a strong claim drawn from a tiny "
+                        "subset, or a conclusion the code doesn't "
+                        "actually support."
+                    ),
+                },
+                "reason": {"type": "string", "description": "One or two sentences explaining the verdict."},
+            },
+            "required": ["sound", "reason"],
+        },
+    },
+}
+
+CROSS_CHECK_SYSTEM_PROMPT = """You are a skeptical second reviewer for a data-analysis agent.
+You are given a hypothesis, the code used to test it, and the result -- with NO statistical significance test available (this is a purely descriptive finding, not a hypothesis test).
+
+Your job: decide if the method and conclusion are methodologically sound, or if there's a real flaw.
+Look for: misleading framing, comparing non-comparable groups, drawing a strong conclusion from a tiny sample, a cherry-picked subset, or a conclusion the code doesn't actually support.
+Be skeptical but fair -- a genuinely simple, correct descriptive fact (e.g. "the highest-priced product is X") is fine and should be marked sound.
+"""
+
+
+def llm_cross_check(hypothesis: str, code: str, result: dict, model: str = "gpt-4o") -> dict:
+    """Second-opinion LLM review for descriptive findings with no
+    p-value to statistically replicate. Reviews the METHOD and
+    REASONING, not a number -- there's no number to re-check here,
+    that's exactly why this exists instead of another split-test."""
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": CROSS_CHECK_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps({"hypothesis": hypothesis, "code": code, "result": result})},
+        ],
+        tools=[CROSS_CHECK_TOOL],
+        tool_choice={"type": "function", "function": {"name": "review_finding"}},
+    )
+    tool_call = response.choices[0].message.tool_calls[0]
+    return json.loads(tool_call.function.arguments)
 
 
 def split_dataset(csv_path: str, seed: int = 42):
@@ -64,10 +129,11 @@ def _get_significance_status(result: dict):
     return "has_test", p
 
 
-def verify_result(code: str, csv_path: str, analyst_result: dict) -> dict:
+def verify_result(hypothesis: str, code: str, csv_path: str, analyst_result: dict) -> dict:
     """Re-runs the Analyst's own code on two random halves of the data
-    and checks whether the conclusion holds up. Always returns a verdict
-    dict -- {"verdict": "verified" | "rejected", "reason": str} -- never
+    (when there's a p-value to check), or gets a second LLM opinion on
+    the method (when there isn't). Always returns a verdict dict --
+    {"verdict": "verified" | "rejected", "reason": str} -- never
     silently passes a result through without a stated reason."""
     if not analyst_result.get("success"):
         return {"verdict": "rejected", "reason": "Analyst execution already failed -- nothing to verify."}
@@ -75,10 +141,22 @@ def verify_result(code: str, csv_path: str, analyst_result: dict) -> dict:
     status_full, p_full = _get_significance_status(analyst_result.get("result"))
 
     if status_full == "no_test":
-        # Analyst explicitly said: no test was run. Honest, deliberate,
-        # nothing to statistically dispute -- and no reason to spend
-        # 25-45s x2 rerunning code in the sandbox for nothing.
-        return {"verdict": "verified", "reason": "Descriptive result, no significance test to replicate. Confidence: moderate."}
+        # No p-value to statistically replicate -- get a second LLM
+        # opinion on the METHOD instead of skipping verification
+        # entirely. This is the one extra API call per descriptive
+        # finding; worth it since these were previously auto-verified
+        # with no real scrutiny at all.
+        review = llm_cross_check(hypothesis, code, analyst_result.get("result"))
+        if review["sound"]:
+            return {
+                "verdict": "verified",
+                "reason": f"Descriptive result, no significance test to replicate. LLM cross-check: sound -- {review['reason']}",
+            }
+        else:
+            return {
+                "verdict": "rejected",
+                "reason": f"LLM cross-check flagged a methodological issue: {review['reason']}",
+            }
 
     if status_full == "ambiguous":
         # Analyst's output didn't follow the schema -- we genuinely don't
@@ -151,5 +229,5 @@ print(json.dumps(result))"""
     full_result = run_in_sandbox(sample_code, csv_path)
     print("Full-dataset result:", full_result)
 
-    verdict = verify_result(sample_code, csv_path, full_result)
+    verdict = verify_result("Is there a difference in units_sold across regions?", sample_code, csv_path, full_result)
     print("\nVerdict:", json.dumps(verdict, indent=2))

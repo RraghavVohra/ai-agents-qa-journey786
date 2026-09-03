@@ -43,7 +43,7 @@ def run_full_pipeline(csv_path: str) -> list:
         # time (each split rerun costs ~20-40s thanks to scipy import)
         # when we already know it failed.
         if analyst_result.get("success"):
-            verifier_result = verify_result(analyst_result["code"], csv_path, analyst_result)
+            verifier_result = verify_result(hypothesis, analyst_result["code"], csv_path, analyst_result)
         else:
             verifier_result = {"verdict": "rejected", "reason": analyst_result.get("error", "execution failed")}
 
